@@ -2,7 +2,7 @@
 
 ## Network Quality Metrics
 
-### Measure Development – Anna, Alissa, Monisha?
+### [Measure Development](Measure-Development/) – Anna, Alissa, Monisha?
 - [x] Literature reviews on competitiveness, access measures – included links to competitiveness literature review and literature review as a part of our published paper
 - [x] Development of our current approach to network quality and the required components (competitiveness, trip coverage, regional access), including trips vs. residences and how we think about equity in this process – included link to folder with published paper. Details have changed a lot since publishing time, but the high level why and the approaches to equity and the measures in general are still relevant
 - [ ] BAZ development and other foundational supporting work
