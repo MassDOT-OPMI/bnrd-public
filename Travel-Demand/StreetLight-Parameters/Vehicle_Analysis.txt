@@ -1,0 +1,55 @@
+Analysis ID: 364293
+Analysis: MBTA Service Area - Fall 2021, Hourly Demos
+Created on: 2022-01-31
+Organization: Massachusetts DOT - Regional
+Folder: OPMI
+
+Analysis Setup Details:
+Analysis Type: O-D Analysis (LBS Trip Data)
+Additional Project Configuration: Trip Attributes, Traveler Attributes, Speed Percentile Attributes (5, 15, 85, 95), Travel Time Percentile Attributes (5, 50, 80, 90, 95)
+Unit of Measurement: Miles
+Mode of Travel: All Vehicles
+Data Source: Location-Based Services with Pass-through
+Output Type: StL All Vehicles Volume
+
+Analysis Options: 
+Date Range: 09/01/2021-10/31/2021
+
+
+Day Type: 
+0: All Days (M-Su)
+1: Weekday (M-F)
+2: Saturday (Sa-Sa)
+3: Sunday (Su-Su)
+
+Day Part: 
+00: All Day (12am-12am)
+01: 12am (12am-1am)
+02: 1am (1am-2am)
+03: 2am (2am-3am)
+04: 3am (3am-4am)
+05: 4am (4am-5am)
+06: 5am (5am-6am)
+07: 6am (6am-7am)
+08: 7am (7am-8am)
+09: 8am (8am-9am)
+10: 9am (9am-10am)
+11: 10am (10am-11am)
+12: 11am (11am-12noon)
+13: 12pm (12noon-1pm)
+14: 1pm (1pm-2pm)
+15: 2pm (2pm-3pm)
+16: 3pm (3pm-4pm)
+17: 4pm (4pm-5pm)
+18: 5pm (5pm-6pm)
+19: 6pm (6pm-7pm)
+20: 7pm (7pm-8pm)
+21: 8pm (8pm-9pm)
+22: 9pm (9pm-10pm)
+23: 10pm (10pm-11pm)
+24: 11pm (11pm-12am)
+
+Country: USA
+Metrics Version: R109-M113
+
+Copyright © 2011 - 2021, StreetLight Data, Inc. All rights reserved.

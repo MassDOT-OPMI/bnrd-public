@@ -1,0 +1,38 @@
+Analysis ID: 364709
+Analysis: Fall 2021 Home Grids
+Created on: 2022-01-31
+Organization: Massachusetts DOT - Regional
+Folder: OPMI
+
+Analysis Setup Details:
+Analysis Type: Zone Activity Analysis (LBS Trip Data)
+Additional Project Configuration: Traveler Attributes, Home and Work Locations Attributes
+Unit of Measurement: Miles
+Mode of Travel: All Vehicles
+Data Source: Location-Based Services with Pass-through
+Output Type: StL All Vehicles Volume
+
+Analysis Options: 
+Date Range: 09/01/2021-10/31/2021
+
+
+Day Type: 
+0: All Days (M-Su)
+1: Weekday (M-F)
+2: Saturday (Sa-Sa)
+3: Sunday (Su-Su)
+
+Day Part: 
+0: All Day (12am-12am)
+1: Early AM (3am-7am)
+2: Peak AM (7am-9am)
+3: Mid-Day base (9am-2pm)
+4: Mid-Day school (2pm-4pm)
+5: PM Peak (4pm-7pm)
+6: Evening (7pm-10pm)
+7: Late Night (10pm-3am)
+
+Country: USA
+Metrics Version: R109-M113
+
+Copyright © 2011 - 2021, StreetLight Data, Inc. All rights reserved.
