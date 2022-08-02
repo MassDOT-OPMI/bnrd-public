@@ -1,0 +1,979 @@
+---
+title: "Demographics Correction Script"
+author: "OPMI"
+date: "1/5/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(tidycensus)
+library(magrittr)
+
+# avoid scientific notation
+options(scipen = 999)
+```
+
+Purpose of the script is to streamline the demographic correction process -- i.e., take StreetLight home and work analyses and create correction factors for origins in order to bring O-D analysis demographics into agreement with Title VI definitions of racial/ethnic minority & low-income. In addition, the script can add information such as limited English proficiency. 
+
+When running for a new time period (currently set up to run Fall 2019), be sure to run all chunks currently marked as `eval = FALSE`. To save processing time, the script skips these chunks and loads from RData files stored in Data/.
+
+# Change File Paths
+
+```{r}
+# List the file paths for your username and StreetLight analyses below
+user <- "path_to_username"
+
+# # Fall 2021
+# za <- "364709_Fall_2021_Home_Grids"
+# bike <- "364336_Copy_MBTA_Bike_Fall_2021_Hourly"
+# ped <- "364337_Copy_MBTA_Ped_Fall_2021_Hourly_Demos"
+# veh <- "364293_MBTA_Service_Area_Fall_2021_Hourly"
+# veh_trips_col_types = "ccccdccccdcccddddddddddddddddddddddddddddddddddddddddddddddddddd"
+# 
+# od_output_name <- "Corrected_Fall_2021_OD_Volumes"
+
+
+# 2019
+za <- "202270_Pre_Pandemic_Home_Grids_2019_MBTA"
+bike <- "200555_MBTA_Service_Area_Bike_Fall_2019"
+ped <- "200573_MBTA_Service_Area_Ped_Fall_2019"
+veh <- "200524_MBTA_Service_Area_Fall_2019_Hourly"
+veh_trips_col_types <- "ccccdccccdcccdddddddddddddddddddddddddddddddddddddddddd"
+
+od_output_name <- "Corrected_Fall_2019_OD_Volumes"
+```
+
+# Streetlight Names
+
+```{r}
+stl_names <- read_csv("./Data/StreetLight_ColNames.csv", col_types = "cc") %>% deframe()
+```
+
+
+# BAZ Reference
+
+```{r}
+baz_ref <- read_csv(paste0(user, "filepath"),
+                    col_types = "ccddcdccdcd")
+baz_ref %<>% select(baz, baz_name, blkgrp)
+```
+
+
+
+# Census
+
+```{r, eval = FALSE}
+# load census key with census_api_key in console
+
+# load variable crosswalk 
+# vars_2019_acs <- load_variables(2019, "acs5")
+# save(vars_2019_acs, file = "./Data/vars_2019_acs.RData")
+load("./Data/vars_2019_acs.RData")
+
+# load MA BG variables
+census_mass_bgs_vars <-
+  c("B03002_001","B03002_002","B03002_003","B03002_012","B03002_013",
+    "B19001_001", "B19001_002", "B19001_003", "B19001_004", "B19001_005", "B19001_006",
+    "B19001_007", "B19001_008", "B19001_009", "B19001_010",
+    "C16002_001", "C16002_004", "C16002_007", "C16002_010", "C16002_013")
+
+# pull variables 
+census_mass_bgs <-
+  get_acs(geography = "block group",
+          variables = census_mass_bgs_vars,
+          output = "tidy",
+          state = "MA",
+          year = 2019,
+          show_call = TRUE)
+Sys.sleep(1)
+
+
+# MA tract variables
+census_mass_cts_vars <- 
+  c("B03002_001", 
+    "B08201_001", "B08201_008", "B08201_014", "B08201_015", "B08201_020",
+    "B08201_021", "B08201_026", "B08201_027", "B08201_028")
+
+# pull variables 
+census_mass_cts <-
+  get_acs(geography = "tract",
+          variables = census_mass_cts_vars,
+          output = "tidy",
+          state = "MA",
+          year = 2019,
+          show_call = TRUE)
+Sys.sleep(1)
+
+
+# variables for states
+census_states_vars <- c(census_mass_bgs_vars, census_mass_cts_vars) %>% unique()
+rm(census_mass_bgs_vars, census_mass_cts_vars)
+
+# variables crosswalk
+census_vars_xwalk <-
+  tibble(acs_var = census_states_vars) %>%
+  left_join(vars_2019_acs, by = c("acs_var" = "name")) %>%
+  mutate(label = str_remove(label, "Estimate!!Total:"), label = str_remove_all(label, "!!"), 
+         label = case_when(acs_var == "B03002_001" ~ "Total Population",
+                           acs_var %in% c("B19001_001", "C16002_001", "B08201_001") ~ "Total HH", TRUE ~ label))
+rm(vars_2019_acs)
+
+
+# pull state data
+census_states <-
+  get_acs(geography = "state",
+          variables = census_states_vars,
+          output = "tidy",
+          year = 2019,
+          show_call = TRUE)
+rm(census_states_vars)
+
+
+
+## Create Demographics Tables
+
+
+### Pivot 
+
+census_vars_xwalk %<>%
+  mutate(colname = recode(label,
+         "Total Population" = "pop_tot",
+         "Not Hispanic or Latino:" = "pop_nothisp",
+         "Not Hispanic or Latino:White alone" = "pop_nothisp_white",
+         "Hispanic or Latino:" = "pop_hisp",
+         "Hispanic or Latino:White alone" = "pop_hisp_white",
+         "Total HH" = "hh_tot", 
+         "Less than $10,000" = "hh_lessthan10k",
+         "$10,000 to $14,999" = "hh_10to15k",
+         "$15,000 to $19,999" = "hh_15to19k",
+         "$20,000 to $24,999" = "hh_20to25k",
+         "$25,000 to $29,999" = "hh_25to30k",
+         "$30,000 to $34,999"= "hh_30to35k",
+         "$35,000 to $39,999" = "hh_35to40k",
+         "$40,000 to $44,999" = "hh_40to45k",
+         "$45,000 to $49,999"  = "hh_45to50k",
+         "Total HH" = "hh_tot",
+         "Spanish:Limited English speaking household" = "hh_lep_spanish",
+         "Other Indo-European languages:Limited English speaking household"  = "hh_lep_indoeur",
+         "Asian and Pacific Island languages:Limited English speaking household" = "hh_lep_asian",
+         "Other languages:Limited English speaking household" = "hh_lep_other",
+         "Total HH" = "hh_tot",
+         "1-person household:No vehicle available" = "hh_1pers_nocar",
+         "2-person household:No vehicle available" = "hh_2pers_nocar",
+         "2-person household:1 vehicle available" = "hh_2pers_1car",
+         "3-person household:No vehicle available" = "hh_3pers_nocar",
+         "3-person household:1 vehicle available"  = "hh_3pers_1car",
+         "4-or-more-person household:No vehicle available" = "hh_4pers_nocar",
+         "4-or-more-person household:1 vehicle available" = "hh_4pers_1car",
+         "4-or-more-person household:2 vehicles available" = "hh_4pers_2car"
+  ),
+  .after = label) 
+
+census_mass_bgs_wide <-
+  census_mass_bgs %>% left_join((census_vars_xwalk %>% select(acs_var, colname)), by = c("variable" = "acs_var")) %>% 
+  select(GEOID, colname, estimate) %>% 
+  distinct() %>% 
+  pivot_wider(names_from = colname, values_from = estimate)
+rm(census_mass_bgs)
+
+census_mass_cts_wide <-
+  census_mass_cts %>% left_join((census_vars_xwalk %>% select(acs_var, colname)), by = c("variable" = "acs_var")) %>% 
+  select(GEOID, colname, estimate) %>% 
+  distinct() %>% 
+  pivot_wider(names_from = colname, values_from = estimate)
+rm(census_mass_cts)
+
+census_states_wide <-
+  census_states %>% left_join((census_vars_xwalk %>% select(acs_var, colname)), by = c("variable" = "acs_var")) %>% 
+  select(GEOID, NAME, colname, estimate) %>% 
+  distinct() %>% 
+  pivot_wider(names_from = colname, values_from = estimate)
+rm(census_states)
+
+rm(census_vars_xwalk)
+
+
+
+### Join tracts to BGs 
+
+
+census_mass_cts_pcts <-
+  census_mass_cts_wide %>% 
+  mutate(hh_limveh_strict = 
+           hh_1pers_nocar + hh_2pers_nocar + hh_3pers_nocar + hh_3pers_1car + hh_4pers_nocar + hh_4pers_1car,
+         hh_limveh_weak = 
+           hh_1pers_nocar + hh_2pers_nocar + hh_2pers_1car + hh_3pers_nocar + hh_3pers_1car + hh_4pers_nocar + hh_4pers_1car + hh_4pers_2car
+           ) %>% 
+  mutate(hh_limveh_strict_pct = hh_limveh_strict/hh_tot, hh_limveh_weak_pct = hh_limveh_weak/hh_tot) %>% 
+  select(GEOID, ends_with("pct"))
+rm(census_mass_cts_wide)
+
+census_mass_bgs_pcts <-
+  census_mass_bgs_wide %>% 
+  mutate(
+    pop_white = pop_nothisp_white + pop_hisp_white,
+    pop_mino = pop_tot - pop_nothisp_white,
+    hh_li45 = hh_lessthan10k + hh_10to15k + hh_15to19k + hh_20to25k + hh_25to30k + hh_30to35k + hh_35to40k + hh_40to45k,
+    hh_li50 = hh_li45 + hh_45to50k,
+    hh_lep = hh_lep_spanish + hh_lep_indoeur + hh_lep_asian + hh_lep_other) %>% 
+  mutate(
+    pop_white_pct = pop_white/pop_tot,
+    pop_hisp_white_pct = pop_hisp_white/pop_tot,
+    pop_mino_pct = pop_mino/pop_tot,
+    pop_hisp_pct = pop_hisp/pop_tot,
+    hh_li45_pct = hh_li45/hh_tot,
+    hh_li50_pct = hh_li50/hh_tot,
+    hh_lep_pct = hh_lep/hh_tot) %>% 
+  select(GEOID, pop_tot, hh_tot, starts_with("pop_mino"), starts_with("pop_white"), starts_with("pop_hisp"), starts_with("hh_li"), hh_lep, hh_lep_pct)
+rm(census_mass_bgs_wide)
+
+census_mass_info <-
+  census_mass_bgs_pcts %>% 
+  mutate(tosep = GEOID, .after = GEOID) %>% 
+  separate(tosep, sep = 11, into = c("tract", "bg")) %>% 
+  left_join(census_mass_cts_pcts, by = c("tract" = "GEOID")) %>% 
+  select(-c(tract, bg))
+rm(census_mass_bgs_pcts, census_mass_cts_pcts)
+
+
+
+
+### Clean States table
+
+
+census_states_info <-
+  census_states_wide  %>% 
+  mutate(hh_limveh_strict = 
+           hh_1pers_nocar + hh_2pers_nocar + hh_3pers_nocar + hh_3pers_1car + hh_4pers_nocar + hh_4pers_1car,
+         hh_limveh_weak = 
+           hh_1pers_nocar + hh_2pers_nocar + hh_2pers_1car + hh_3pers_nocar + hh_3pers_1car + hh_4pers_nocar + hh_4pers_1car + hh_4pers_2car
+           ) %>% 
+  mutate(hh_limveh_strict_pct = hh_limveh_strict/hh_tot, hh_limveh_weak_pct = hh_limveh_weak/hh_tot) %>% 
+  mutate(
+    pop_white = pop_nothisp_white + pop_hisp_white,
+    pop_mino = pop_tot - pop_nothisp_white,
+    hh_li45 = hh_lessthan10k + hh_10to15k + hh_15to19k + hh_20to25k + hh_25to30k + hh_30to35k + hh_35to40k + hh_40to45k,
+    hh_li50 = hh_li45 + hh_45to50k,
+    hh_lep = hh_lep_spanish + hh_lep_indoeur + hh_lep_asian + hh_lep_other) %>% 
+  mutate(
+    pop_white_pct = pop_white/pop_tot,
+    pop_hisp_white_pct = pop_hisp_white/pop_tot,
+    pop_hisp_pct = pop_hisp/pop_tot,
+    pop_mino_pct = pop_mino/pop_tot,
+    hh_li45_pct = hh_li45/hh_tot,
+    hh_li50_pct = hh_li50/hh_tot,
+    hh_lep_pct = hh_lep/hh_tot) %>% 
+  select(GEOID, NAME, pop_tot, hh_tot, starts_with("pop_mino"), starts_with("pop_white"), starts_with("pop_hisp"),
+         hh_li45, hh_li50, hh_li45_pct, hh_li50_pct, hh_lep, hh_lep_pct, hh_limveh_strict, hh_limveh_strict_pct, 
+         hh_limveh_weak, hh_limveh_weak_pct)
+rm(census_states_wide)
+
+save(census_mass_info, census_states_info, file = "./Data/Census_Data.RData")
+```
+
+```{r}
+load("./Data/Census_Data.RData")
+```
+
+
+# Residents Table
+
+```{r}
+# join census pop totals on block group
+baz_pops <-
+  left_join(baz_ref, 
+          (census_mass_info %>% select(GEOID, pop_tot)),
+          by = c("blkgrp" = "GEOID")) %>% 
+  rename(bg_pop = pop_tot)
+
+# calculate percent of baz by block group
+baz_pops %<>% 
+  group_by(baz, baz_name) %>% 
+  mutate(baz_pop = sum(bg_pop)) %>% 
+  ungroup %>% 
+  mutate(bg_pct_baz = bg_pop/baz_pop)
+```
+
+
+
+# Streetlight HWL
+
+## BGs
+
+```{r, eval = FALSE}
+# read home block groups
+za_hbg <- read_csv(paste0("./Data/", za, "/Home Work/", za, "_home_block_groups_all.csv"),
+                   col_types = "ccccccccdd",
+                   na = c("", "N/A"))
+# rename
+za_hbg <- rename(za_hbg, any_of(stl_names))
+
+# filter to all days, all hours (for highest sample size), massachusetts block groups
+za_hbg_filtered <-
+  filter(za_hbg,
+         day_type == "0: All Days (M-Su)" &
+         day_part == "0: All Day (12am-12am)" &
+         str_detect(geoid, "^25"))
+rm(za_hbg)
+gc()
+
+# write to RData file
+save(za_hbg_filtered, file = paste0("./Data/", za, "_hbg_filtered.RData"))
+```
+
+```{r}
+load(paste0("./Data/", za, "_hbg_filtered.RData"))
+```
+
+HWL analysis should contain visitors and/or workers for block groups that are not in the Zone of Analysis, and only workers for block groups that are contained within the Zone of Analysis. 
+  
+```{r}
+# tag block groups as being within the zone of analysis or not
+za_hbg_filtered <-
+  left_join(za_hbg_filtered,
+          (baz_ref %>% mutate(geog_in_zone = TRUE)), # join to list of block groups in each baz
+          by = c("zone_id" = "baz", "zone_name" = "baz_name", "geoid" = "blkgrp")) %>% 
+  replace_na(list(geog_in_zone = FALSE)) %>% # replace anything that didn't join with FALSE
+  relocate(geog_in_zone, .after = geoid) # move to after geoid 
+
+# remove places where the home geography is tagged as visitor
+za_hbg_filtered %<>% filter(!(geog_in_zone & homework_filter == "Visitors"))
+```
+
+
+## States
+
+```{r, eval = FALSE}
+# read home states
+za_state <- read_csv(paste0("./Data/", za, "/Home Work/", za, "_home_state_all.csv"),
+                   col_types = "ccccccccdd",
+                   na = c("", "N/A"))
+# rename
+za_state <- rename(za_state, any_of(stl_names))
+
+# filter to all days, all hours (for highest sample size), outside MA
+za_state_filtered <-
+  filter(za_state,
+         day_type == "0: All Days (M-Su)" &
+         day_part == "0: All Day (12am-12am)" &
+           state_name != "Massachusetts")
+rm(za_state)
+gc()
+
+# write to RData file
+save(za_state_filtered, file = paste0("./Data/", za, "_state_filtered.RData"))
+```
+
+```{r}
+load(paste0("./Data/", za, "_state_filtered.RData"))
+```
+
+```{r}
+za_state_filtered %<>% mutate(geog_in_zone = FALSE, .after = state_name)
+```
+
+
+## ZA 
+
+```{r}
+# read csv
+za_all <- read_csv(paste0("./Data/", za, "/", za, "_za_all.csv"),
+                  col_types = "ccccccdcccddddd",
+                  na = c("", "N/A"))
+
+# rename
+za_all <- rename(za_all, any_of(stl_names))
+
+# filter to all days, all hours (for highest sample size)
+za_all_filtered <-
+  filter(za_all,
+         day_type == "0: All Days (M-Su)" &
+         day_part == "0: All Day (12am-12am)")
+rm(za_all)
+gc()
+```
+
+## Residents Table
+
+```{r}
+# create clean residents table
+za_residents <-
+  za_all_filtered %>% 
+  filter(homework_filter == "Residents") %>% 
+  select(mode, homework_filter, int_type, zone_id, zone_name, day_type, day_part, stl_vol)
+rm(za_all_filtered)
+
+# create join field
+# for baz over 831, za_residents has bg in both, baz_pop has them in the blkgrp but not in baz or baz_name
+baz_pops_tojoin <-
+  baz_pops %>% 
+  transmute(zone_id = if_else(as.numeric(baz) <= 831, baz, blkgrp),
+            zone_name = if_else(as.numeric(baz) <= 831, baz_name, blkgrp),
+            blkgrp, bg_pop, baz_pop, bg_pct_baz)
+
+za_residents <-
+  left_join(za_residents, baz_pops_tojoin, by = c("zone_id", "zone_name")) %>% 
+  transmute(mode, homework_filter, int_type, zone_id, zone_name, day_type, day_part,
+            geoid = blkgrp, geog_in_zone = TRUE, stl_vol, pct_home_location = bg_pct_baz)
+rm(baz_pops_tojoin)
+```
+
+## Create Final HWL Table
+
+```{r}
+# list home and work location tables to join 
+hwl_list <- lst(za_hbg_filtered, za_residents, za_state_filtered)
+rm(za_hbg_filtered, za_residents, za_state_filtered)
+# home geography rename
+home_geog_names <- c("home_geog" = "geoid", "home_geog" = "state_name")
+hwl <- map(hwl_list, ~rename(.x, any_of(home_geog_names))) %>% bind_rows()
+rm(hwl_list, home_geog_names)
+
+
+# Calculate Percent Covered
+# calculate volume by home location, with no correction for covered volume
+hwl %<>% mutate(vol_home_loc_no_corr = stl_vol * pct_home_location)
+
+# calcuate corrected volume by home location, correcting for covered volume
+hwl %<>% 
+  group_by(mode, homework_filter, int_type, zone_id, zone_name, day_type, day_part) %>% 
+  mutate(vol_covered = sum(vol_home_loc_no_corr)) %>% 
+  ungroup %>%
+  mutate(pct_covered = vol_covered/stl_vol) %>% 
+  mutate(vol_home_loc = vol_home_loc_no_corr/pct_covered)
+```
+
+## ZA Traveler
+
+```{r}
+# read csv
+za_trav <- read_csv(paste0("./Data/", za, "/", za, "_zone_traveler_all.csv"),
+                  col_types = "ccccccccccddddddddddddddddddddddddddd",
+                  na = c("", "N/A"))
+# rename
+za_trav <- rename(za_trav, any_of(stl_names))
+
+# filter to all days, all hours (for highest sample size)
+za_trav_filtered <-
+  filter(za_trav,
+         day_type == "0: All Days (M-Su)" &
+         day_part == "0: All Day (12am-12am)")
+rm(za_trav)
+gc()
+
+# remove education & family size variables
+za_trav_filtered %<>% 
+  select(mode:zone_name,
+         day_type:inc_more_200k,
+         white:hispanic)
+```
+
+
+## Join to Census Data
+
+```{r}
+census_info <-
+  bind_rows(
+    (census_mass_info %>% select(geog_name = GEOID, pop_tot, pop_hisp_pct, pop_white_pct, pop_hisp_white_pct, pop_mino_pct, hh_li45_pct,
+                                 hh_li50_pct, hh_lep_pct, hh_limveh_weak_pct)),
+    (census_states_info %>% select(geog_name = NAME, pop_tot, pop_hisp_pct, pop_white_pct, pop_hisp_white_pct, pop_mino_pct, hh_li45_pct,
+                                   hh_li50_pct, hh_lep_pct, hh_limveh_weak_pct))
+    ) 
+
+census_info %<>% rename_with(~str_replace(.x, "_pct", "_pct_acs"))
+
+hwl_census_pct <- left_join(hwl, census_info, by = c("home_geog" = "geog_name"))
+rm(census_mass_info, census_states_info, census_info, hwl)
+gc()
+```
+
+
+# Math
+
+```{r}
+# convert percents to volumes
+hwl_census_vol <-
+  hwl_census_pct %>% 
+  mutate(across(ends_with("pct_acs"), ~ vol_home_loc * .x)) %>% 
+  rename_with(~str_replace(.x, "_pct_acs", "_vol_home_geog"))
+
+# sum up to zone
+hwl_volumes <-
+  hwl_census_vol %>% 
+  group_by(mode, homework_filter, int_type, zone_id, zone_name, day_type, day_part) %>% 
+  summarize(stl_vol = max(stl_vol), # these should be the same
+            check_stl_vol = sum(vol_home_loc),
+            across(ends_with("vol_home_geog"), ~ sum(.x, na.rm = TRUE))) %>% 
+  rename_with(~str_replace(.x, "_vol_home_geog", "_vol")) %>% 
+  ungroup
+
+rm(hwl_census_pct, hwl_census_vol)
+```
+
+
+# QA
+
+```{r}
+# compare % hispanic, % white, % income under 50k
+hwl_comp <-
+  hwl_volumes %>% 
+  transmute(homework_filter, int_type, zone_id, zone_name, day_type, day_part, 
+            hwl_vol = stl_vol,
+            hwl_hisp_vol = pop_hisp_vol, hwl_white_vol = pop_white_vol, hwl_li50_vol = hh_li50_vol,
+            hwl_hisp_pct = pop_hisp_vol/stl_vol, hwl_white_pct = pop_white_vol/stl_vol, hwl_li50_pct = hh_li50_vol/stl_vol)
+za_comp <-
+  za_trav_filtered %>% 
+  transmute(homework_filter, int_type, zone_id, zone_name, day_type, day_part,
+            za_vol = stl_vol,
+            za_hisp_vol = hispanic * stl_vol, za_white_vol = white * stl_vol,
+            za_li50_vol = (inc_less_20k + inc_20k_35k + inc_35k_50k) * stl_vol,
+            za_hisp_pct = hispanic, za_white_pct = white, za_li50_pct = inc_less_20k + inc_20k_35k + inc_35k_50k)
+
+comp <-
+  left_join(hwl_comp, za_comp,
+            by = c("homework_filter", "int_type", "zone_id", "zone_name", "day_type", "day_part"))
+rm(hwl_comp, za_comp)
+
+comp_agg <-
+  comp %>% 
+  group_by(int_type, zone_id, zone_name, day_type, day_part) %>% 
+  summarize(across(ends_with("vol"), ~sum(.x, na.rm = TRUE))) %>% 
+  ungroup
+
+# comp %>%
+#   ggplot(aes(x = hwl_hisp_vol, y = za_hisp_vol)) +
+#   geom_point() +
+#   geom_abline(slope = 1, intercept = 0) +
+#   theme_classic() +
+#   labs(x = "Hispanic Travel Volume\n(Home & Work Locations + ACS)", y = "Hispanic Travel Volume\n(Zone Activity Analysis)") +
+#   theme(axis.title.y = element_text(angle = 0, vjust = 0.5, hjust = 0.5))
+# 
+# comp %>%
+#   ggplot(aes(x = hwl_white_vol, y = za_white_vol)) +
+#   geom_point() +
+#   geom_abline(slope = 1, intercept = 0) +
+#   theme_classic() +
+#   labs(x = "White Travel Volume\n(Home & Work Locations + ACS)", y = "White Travel Volume\n(Zone Activity Analysis)") +
+#   theme(axis.title.y = element_text(angle = 0, vjust = 0.5, hjust = 0.5))
+# 
+# comp %>%
+#   ggplot(aes(x = hwl_li50_vol, y = za_li50_vol)) +
+#   geom_point() +
+#   geom_abline(slope = 1, intercept = 0) +
+#   theme_classic() +
+#   labs(x = "Low-Income Travel Volume\n(Home & Work Locations + ACS)", y = "Low-Income Travel Volume\n(Zone Activity Analysis)") +
+#   theme(axis.title.y = element_text(angle = 0, vjust = 0.5, hjust = 0.5))
+
+
+comp_agg %>% 
+  ggplot(aes(x = hwl_hisp_vol, y = za_hisp_vol)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0) +
+  theme_classic() +
+  labs(x = "Hispanic Travel Volume\n(Home & Work Locations + ACS)", y = "Hispanic Travel Volume\n(Zone Activity Analysis)") +
+  theme(axis.title.y = element_text(angle = 0, vjust = 0.5, hjust = 0.5))
+
+comp_agg %>% 
+  ggplot(aes(x = hwl_white_vol, y = za_white_vol)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0) +
+  theme_classic() +
+  labs(x = "White Travel Volume\n(Home & Work Locations + ACS)", y = "White Travel Volume\n(Zone Activity Analysis)") +
+  theme(axis.title.y = element_text(angle = 0, vjust = 0.5, hjust = 0.5))
+
+comp_agg %>% 
+  ggplot(aes(x = hwl_li50_vol, y = za_li50_vol)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0) +
+  theme_classic() +
+  labs(x = "Low-Income Travel Volume\n(Home & Work Locations + ACS)", y = "Low-Income Travel Volume\n(Zone Activity Analysis)") +
+  theme(axis.title.y = element_text(angle = 0, vjust = 0.5, hjust = 0.5))
+# all changes make directional sense, given that StreetLight ZA uses 2010 census, and this analysis uses 2019 ACS.
+
+rm(comp, comp_agg)
+```
+
+
+# Final Output (Zone/IntType Level)
+
+```{r}
+hwl_za <-
+  left_join(
+  (hwl_volumes %>% 
+    select(mode:day_part,
+           hwl_vol = stl_vol, hwl_white_vol = pop_white_vol, hwl_hisp_white_vol = pop_hisp_white_vol, hwl_mino_vol = pop_mino_vol,
+           hwl_li45_vol = hh_li45_vol, hwl_li50_vol = hh_li50_vol, hwl_lep_vol = hh_lep_vol, hwl_limveh_weak_vol = hh_limveh_weak_vol)),
+  (za_trav_filtered %>% 
+    transmute(mode, homework_filter, int_type, zone_id, zone_name, day_type, day_part,
+              za_vol = stl_vol,
+              za_white_vol = white * stl_vol, za_li50_vol = (inc_less_20k + inc_20k_35k + inc_35k_50k) * stl_vol)),
+  by = c("mode", "homework_filter", "int_type", "zone_id", "zone_name", "day_type", "day_part")
+)
+rm(hwl_volumes, za_trav_filtered)
+
+# int type, zone id, zone name, day type, day part
+# stl vol
+# percent of white travel that is made by white hispanic people
+# percent of total travel made by white hispanic people
+# percent of total travel made by non- white hispanic people
+# percent of travel made by low-income (45 & 50k) people
+# percent of travel made by people with limited access to a vehicle (exclusive of 0.5)
+# percent of travel made by people with limited english proficiency
+
+hwl_za_agg <-
+  hwl_za %>% 
+  group_by(mode, int_type, zone_id, zone_name, day_type, day_part) %>% 
+  summarize(across(ends_with("vol"), ~ sum(.x, na.rm = TRUE))) %>% 
+  ungroup
+
+demo_corrections_output <-
+  hwl_za_agg %>% 
+  mutate(hisp_white_of_tot_pct = hwl_hisp_white_vol/hwl_vol,
+         hisp_white_of_white_pct = hwl_hisp_white_vol/hwl_white_vol,
+         mino_pct = hwl_mino_vol/hwl_vol,
+         li45_pct = hwl_li45_vol/hwl_vol,
+         li50_pct = hwl_li50_vol/hwl_vol,
+         limveh_weak_pct = hwl_limveh_weak_vol/hwl_vol,
+         lep_vol = hwl_lep_vol/hwl_vol)
+save(demo_corrections_output, file = paste0("./Data/Demo_Corrections_Output_", za, ".RData"))
+write_csv(demo_corrections_output, paste0("./Data/Demo_Corrections_Output_", za, ".csv"))
+rm(hwl_za, hwl_za_agg)
+gc()
+```
+
+
+# Apply to O-D
+
+```{r}
+load(paste0("./Data/Demo_Corrections_Output_", za, ".RData"))
+```
+
+
+## Read Bike Analysis
+
+```{r, eval = FALSE}
+bike_trav <- read_csv(paste0("./Data/", bike, "/", bike, "_od_traveler_bike.csv"),
+                      col_types = "ccccdccccdcccdddddddddddddddddddddddddddddd",
+                      na = c("", "N/A"))
+bike_trav %<>% rename(any_of(stl_names))
+
+bike_trav %<>% 
+  transmute(orig_zone_id, orig_zone_name, dest_zone_id, dest_zone_name,
+            day_type, day_part,
+            b_stl_inc_less_50k_pct = inc_less_20k + inc_20k_35k + inc_35k_50k,
+            b_stl_white_pct = white,
+            b_purpose_hbw_pct = purpose_hbw,
+            b_purpose_nhb_pct = purpose_nhb,
+            b_purpose_hbo_pct = purpose_hbo)
+
+
+bike_trip <- read_csv(paste0("./Data/", bike, "/", bike, "_od_trip_bike.csv"),
+                      col_types = "ccccdccccdcccddddddddddddddddddddddddddddddddddddd",
+                      na = c("", "N/A"))
+bike_trip %<>% rename(any_of(stl_names))
+bike_trip %<>% 
+  transmute(orig_zone_id, orig_zone_name, dest_zone_id, dest_zone_name,
+            day_type, day_part,
+            b_ind = stl_ind,
+            b_short_ind = stl_ind * trip_less_1mi,
+            b_long_ind = stl_ind * trip_more_1mi)
+  
+
+save(bike_trav, bike_trip, file = paste0("./Data/", bike, "_cleaned.RData"))
+```
+
+```{r}
+load(paste0("./Data/", bike, "_cleaned.RData"))
+```
+
+
+## Read Ped Analysis
+
+
+```{r, eval = FALSE}
+ped_trav <- read_csv(paste0("./Data/", ped, "/", ped, "_od_traveler_ped.csv"),
+                      col_types = "ccccdccccdcccdddddddddddddddddddddddddddddd",
+                      na = c("", "N/A"))
+ped_trav %<>% rename(any_of(stl_names))
+
+ped_trav %<>% 
+  transmute(orig_zone_id, orig_zone_name, dest_zone_id, dest_zone_name,
+            day_type, day_part,
+            p_stl_inc_less_50k_pct = inc_less_20k + inc_20k_35k + inc_35k_50k,
+            p_stl_white_pct = white,
+            p_purpose_hbw_pct = purpose_hbw,
+            p_purpose_nhb_pct = purpose_nhb,
+            p_purpose_hbo_pct = purpose_hbo)
+
+ped_trip <- read_csv(paste0("./Data/", ped, "/", ped, "_od_trip_ped.csv"),
+                      col_types = "ccccdccccdcccdddddddddddddddddddddddddddddddddd",
+                      na = c("", "N/A"))
+ped_trip %<>% rename(any_of(stl_names))
+ped_trip %<>% 
+  transmute(orig_zone_id, orig_zone_name, dest_zone_id, dest_zone_name,
+            day_type, day_part,
+            p_ind = stl_ind,
+            p_short_ind = stl_ind * trip_less_1mi,
+            p_long_ind = stl_ind * trip_more_1mi)
+
+save(ped_trav, ped_trip, file = paste0("./Data/", ped, "_cleaned.RData"))
+```
+
+```{r}
+load(paste0("./Data/", ped, "_cleaned.RData"))
+```
+
+## Read Vehicle Analysis
+
+```{r, eval = FALSE}
+veh_trav <- read_csv(paste0("./Data/", veh, "/", veh, "_od_traveler_all.csv"),
+                      col_types = "ccccdccccdcccdddddddddddddddddddddddddddddd",
+                      na = c("", "N/A"))
+veh_trav %<>% rename(any_of(stl_names))
+veh_trav %<>% 
+  transmute(orig_zone_id, orig_zone_name, dest_zone_id, dest_zone_name,
+            day_type, day_part,
+            v_stl_inc_less_50k_pct = inc_less_20k + inc_20k_35k + inc_35k_50k,
+            v_stl_white_pct = white,
+            v_purpose_hbw_pct = purpose_hbw,
+            v_purpose_nhb_pct = purpose_nhb,
+            v_purpose_hbo_pct = purpose_hbo)
+gc()
+
+veh_trip <- read_csv(paste0("./Data/", veh, "/", veh, "_od_trip_all.csv"),
+                      col_types = veh_trips_col_types,
+                      na = c("", "N/A")
+                     )
+veh_trip %<>% 
+  rename(any_of(stl_names)) 
+veh_trip %<>% 
+  transmute(orig_zone_id, orig_zone_name, dest_zone_id, dest_zone_name,
+            day_type, day_part,
+            v_vol = stl_vol,
+            v_short_vol = stl_vol * trip_less_1mi,
+            v_long_vol = stl_vol * trip_more_1mi)
+gc()
+
+save(veh_trav, veh_trip, file = paste0("./Data/", veh, "_cleaned.RData"))
+```
+
+
+```{r}
+load(paste0("./Data/", veh, "_cleaned.RData"))
+```
+
+
+## Create Combined Bike/Ped/Vehicle
+
+```{r}
+join_fields <- c("orig_zone_id", "orig_zone_name", "dest_zone_id", "dest_zone_name", "day_type", "day_part")
+
+bike_comb <-
+  left_join(bike_trav, bike_trip,
+            by = join_fields)
+bike_comb %<>% 
+  mutate(across(ends_with("_pct"), ~.x * b_ind)) %>% 
+  rename_with(~str_replace(.x, "_pct", "_ind"))
+rm(bike_trav, bike_trip)
+
+ped_comb <-
+  left_join(ped_trav, ped_trip,
+            by = join_fields)
+ped_comb %<>% 
+  mutate(across(ends_with("_pct"), ~.x * p_ind)) %>% 
+  rename_with(~str_replace(.x, "_pct", "_ind"))
+rm(ped_trav, ped_trip)
+
+veh_comb <-
+  left_join(veh_trav, veh_trip,
+            by = join_fields)
+veh_comb %<>% 
+  mutate(across(ends_with("_pct"), ~.x * v_vol)) %>% 
+  rename_with(~str_replace(.x, "_pct", "_vol"))
+rm(veh_trav, veh_trip)
+gc()
+```
+
+
+## Merge Files
+
+```{r}
+bike_ped_comb <- full_join(bike_comb, ped_comb, by = join_fields)
+rm(bike_comb, ped_comb)
+
+bike_ped_veh_comb <- full_join(bike_ped_comb, veh_comb, by = join_fields)
+rm(bike_ped_comb, veh_comb)
+gc()
+
+rm(join_fields)
+```
+
+
+## Math
+
+```{r}
+# replace NAs
+bike_ped_veh_comb %<>% 
+  mutate(across(where(is.double), ~ replace_na(., 0)))
+
+bike_ped_veh_vols <-
+  bike_ped_veh_comb %>% 
+  transmute(orig_zone_id, orig_zone_name, dest_zone_id, dest_zone_name, 
+            day_type, day_part,
+            stl_vol = b_ind + p_ind + v_vol,
+            stl_inc_less_50k_vol = b_stl_inc_less_50k_ind + p_stl_inc_less_50k_ind + v_stl_inc_less_50k_vol,
+            stl_white_vol = b_stl_white_ind + p_stl_white_ind + v_stl_white_vol,
+            purpose_hbw_vol = b_purpose_hbw_ind + p_purpose_hbw_ind + v_purpose_hbw_vol,
+            purpose_nhb_vol = b_purpose_nhb_ind + p_purpose_nhb_ind + v_purpose_nhb_vol,
+            purpose_hbo_vol = b_purpose_hbo_ind + p_purpose_hbo_ind + v_purpose_hbo_vol,
+            short_vol = b_short_ind + p_short_ind + v_short_vol,
+            long_vol = b_long_ind + p_long_ind + v_long_vol)
+rm(bike_ped_veh_comb)
+gc()
+```
+## Apply Demo Corrections on Start and End
+
+```{r}
+dc_orig <-
+  demo_corrections_output %>% 
+  filter(int_type == "Trip Start") %>% 
+  select(zone_id, zone_name, hwl_vol, hisp_white_of_white_pct, li50_pct, limveh_weak_pct, mino_pct) %>% 
+  rename_with(~str_c("orig_", .x))
+dc_dest <-
+  demo_corrections_output %>%
+  filter(int_type == "Trip End") %>%
+  select(zone_id, zone_name, hwl_vol, hisp_white_of_white_pct, li50_pct, limveh_weak_pct, mino_pct) %>% 
+  rename_with(~str_c("dest_", .x))
+
+bike_ped_veh_vols_joined <-
+  bike_ped_veh_vols %>% 
+  left_join(dc_orig, by = c("orig_zone_id", "orig_zone_name")) %>% 
+  left_join(dc_dest, by = c("dest_zone_id", "dest_zone_name")) 
+
+
+bike_ped_veh_vols_joined %<>% 
+  mutate(hisp_white_of_white_pct = ((orig_hwl_vol * orig_hisp_white_of_white_pct) + (dest_hwl_vol * dest_hisp_white_of_white_pct))/
+                                      (orig_hwl_vol + dest_hwl_vol),
+         mino_pct = ((orig_hwl_vol * orig_mino_pct) + (dest_hwl_vol * dest_mino_pct))/(orig_hwl_vol + dest_hwl_vol),
+         li50_pct = ((orig_hwl_vol * orig_li50_pct) + (dest_hwl_vol * dest_li50_pct))/(orig_hwl_vol + dest_hwl_vol),
+         limveh_pct = ((orig_hwl_vol * orig_limveh_weak_pct) + (dest_hwl_vol * dest_limveh_weak_pct))/(orig_hwl_vol + dest_hwl_vol))
+
+od_output <-
+  bike_ped_veh_vols_joined %>% 
+  transmute(orig_zone_id, orig_zone_name,
+            dest_zone_id, dest_zone_name,
+            day_type, day_part,
+            stl_vol,
+            mino_vol_hwl = stl_vol * mino_pct,
+            mino_vol_stlcor = stl_vol - (stl_white_vol * (1 - hisp_white_of_white_pct)),
+            li50_vol_hwl = stl_vol * li50_pct,
+            li50_vol_stl = stl_inc_less_50k_vol,
+            limveh_vol = stl_vol * limveh_pct,
+            purpose_hbw_vol,
+            purpose_hbo_vol,
+            purpose_nhb_vol,
+            short_vol,
+            long_vol)
+
+od_output %<>% 
+  transmute(orig_zone_id, orig_zone_name,
+            dest_zone_id, dest_zone_name,
+            day_type, day_part,
+            stl_vol,
+            mino_vol = if_else(is.na(mino_vol_hwl), mino_vol_stlcor, mino_vol_hwl),
+            li50_vol = if_else(is.na(li50_vol_hwl), li50_vol_stl, li50_vol_hwl),
+            limveh_vol,
+            purpose_hbw_vol,
+            purpose_hbo_vol,
+            purpose_nhb_vol,
+            short_vol,
+            long_vol)
+
+od_output %<>% arrange(orig_zone_id, dest_zone_id, day_type, day_part)
+```
+
+# OD QA
+
+```{r, eval = FALSE}
+od_output_testing <-
+  bike_ped_veh_vols_joined %>% 
+  transmute(orig_zone_id, orig_zone_name,
+            dest_zone_id, dest_zone_name,
+            day_type, day_part,
+            stl_vol,
+            mino_vol_hwl = stl_vol * mino_pct,
+            mino_vol_stlcor = stl_vol - (stl_white_vol * (1 - hisp_white_of_white_pct)),
+            li50_vol_hwl = stl_vol * li50_pct,
+            li50_vol_stl = stl_inc_less_50k_vol,
+            limveh_vol = stl_vol * limveh_pct,
+            purpose_hbw_vol,
+            purpose_hbo_vol,
+            purpose_nhb_vol,
+            short_vol,
+            long_vol)
+
+# demo_corrections_output %>% filter(zone_id == "250173164006")
+od_malden_everett <- 
+  od_output_testing %>%  
+  filter(str_detect(orig_zone_name, "Malden") | str_detect(orig_zone_name, "Everett") |
+           str_detect(dest_zone_name, "Malden") | str_detect(dest_zone_name, "Everett"))
+
+
+od_malden_everett %>%   
+  ggplot(aes(x = mino_vol_hwl, y = mino_vol_stlcor)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0) +
+  theme_classic() + xlim(0,5000) + ylim(0,5000) +
+  labs(x = "Minority Travel Volume\n(Home & Work Locations + ACS)", y = "Minority Travel Volume\n(Corrected StL OD)") +
+  theme(axis.title.y = element_text(angle = 0, vjust = 0.5, hjust = 0.5))
+
+od_malden_everett %>% 
+  ggplot(aes(x = li50_vol_hwl, y = li50_vol_stl)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0) +
+  theme_classic() +
+  # xlim(0,5000) + ylim(0,5000) +
+  labs(x = "Low-Income Travel Volume\n(Home & Work Locations + ACS)", y = "Low-Income Travel Volume\n(StreetLight OD)") +
+  theme(axis.title.y = element_text(angle = 0, vjust = 0.5, hjust = 0.5))
+
+
+od_output_testing %>% slice_sample(prop = 0.05) %>%    
+  ggplot(aes(x = mino_vol_hwl, y = mino_vol_stlcor)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0) +
+  theme_classic() + 
+  # xlim(0,5000) + ylim(0,5000) +
+  labs(x = "Minority Travel Volume\n(Home & Work Locations + ACS)", y = "Minority Travel Volume\n(Corrected StL OD)") +
+  theme(axis.title.y = element_text(angle = 0, vjust = 0.5, hjust = 0.5))
+
+od_output_testing %>% slice_sample(prop = 0.05) %>%    
+  ggplot(aes(x = li50_vol_hwl, y = li50_vol_stl)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0) +
+  theme_classic() +
+  # xlim(0,5000) + ylim(0,5000) +
+  labs(x = "Low-Income Travel Volume\n(Home & Work Locations + ACS)", y = "Low-Income Travel Volume\n(StreetLight OD)") +
+  theme(axis.title.y = element_text(angle = 0, vjust = 0.5, hjust = 0.5))
+
+od_output_testing %>% slice_sample(prop = 0.05) %>% 
+  filter(is.na(li50_vol_hwl) | is.na(li50_vol_stl))
+```
+
+# Output OD
+
+```{r}
+save(od_output, file = paste0("./Data/", od_output_name, ".RData"))
+write_csv(od_output, paste0("./Data/", od_output_name, ".csv"))
+```
+
+# Clean Up
+
+```{r}
+rm(baz_pops, baz_ref, bike_ped_veh_vols, bike_ped_veh_vols_joined, dc_dest, dc_orig)
+rm(bike, ped, veh, za, user, stl_names, od_output_name, veh_trips_col_types)
+gc()
+```
+
+
